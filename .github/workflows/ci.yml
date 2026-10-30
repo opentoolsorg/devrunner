@@ -7,6 +7,7 @@ on:
     branches:
     - main
 
+  workflow_dispatch: {}
 env:
   CARGO_TERM_COLOR: always
 
@@ -15,7 +16,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
-    if: "${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate' && (!startsWith(github.ref, 'refs/tags/v')) }}"
+    if: ${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate') || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -28,10 +29,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
+    timeout-minutes: 30
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    if: "${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate' && (!startsWith(github.ref, 'refs/tags/v')) }}"
+    if: ${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate') || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
 
     strategy:
       matrix:
@@ -45,10 +47,11 @@ jobs:
       - name: devrunner tests (release)
         run: cargo test --release --all-features
 
+    timeout-minutes: 30
   security:
     name: Security Audit
     runs-on: ubuntu-latest
-    if: "${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate' && (!startsWith(github.ref, 'refs/tags/v')) }}"
+    if: ${{ (github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate') || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v')) }}
 
     steps:
       - uses: actions/checkout@v4
@@ -59,10 +62,11 @@ jobs:
         run: cargo audit
 
   # Runs only on tags - validates tag is on main branch
+    timeout-minutes: 30
   validate-tag:
     name: Validate Tag
     runs-on: ubuntu-latest
-    if: "${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate' && (startsWith(github.ref, 'refs/tags/v')) }}"
+    if: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') }}
 
     steps:
       - uses: actions/checkout@v4
@@ -80,12 +84,17 @@ jobs:
             exit 1
           fi
 
+    timeout-minutes: 30
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
-    if: "${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate' && (startsWith(github.ref, 'refs/tags/v')) }}"
+    if: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') }}
 
-    needs: [validate-tag]
+    needs:
+    - validate-tag
+    - lint
+    - test
+    - security
     strategy:
       matrix:
         include:
@@ -146,10 +155,11 @@ jobs:
             ${{ matrix.artifact }}
             ${{ matrix.artifact }}.sha256
 
+    timeout-minutes: 60
   release:
     name: Release
     runs-on: ubuntu-latest
-    if: "${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate' && (startsWith(github.ref, 'refs/tags/v')) }}"
+    if: ${{ github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/v') }}
 
     needs: build
     permissions:
@@ -197,3 +207,7 @@ jobs:
         run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    timeout-minutes: 60
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.label.name || github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'build:validate' }}
